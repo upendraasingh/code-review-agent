@@ -106,15 +106,20 @@ async def review_code(request: CodeReviewRequest):
             overall_score=overall_score,
         )
 
+        def normalize_findings(findings):
+            if findings is None:
+                return ""
+            if isinstance(findings, (list, tuple)):
+                return "\n".join(str(item) for item in findings if item is not None)
+            return str(findings)
+
         return {
-            "review_id": review_id,
-            "status": "complete",
-            "security_findings": security_findings,
-            "performance_findings": performance_findings,
-            "style_findings": style_findings,
-            "summary": summary_comment,
-            "summary_comment": summary_comment,
             "overall_score": overall_score,
+            "summary": summary_comment or "Code review completed",
+            "security_findings": normalize_findings(security_findings),
+            "performance_findings": normalize_findings(performance_findings),
+            "style_findings": normalize_findings(style_findings),
+            "status": "complete",
         }
     except Exception as e:
         return {"error": str(e), "detail": type(e).__name__, "status": 500}
@@ -455,12 +460,22 @@ async def dashboard():
                     return data;
                 };
 
+                const parseFindings = (findings) => {
+                    if (!findings) return [];
+                    if (Array.isArray(findings)) return findings.filter(Boolean);
+                    return findings
+                        .split(/\r?\n/)
+                        .map((line) => line.trim())
+                        .filter(Boolean);
+                };
+
                 const showReviewResults = (data) => {
-                    const score = data.overall_score || data.score || 0;
+                    console.log(data);
+                    const score = data.overall_score ?? data.score ?? 0;
                     const cleanText = data.summary || data.summary_comment || '';
-                    const securityItems = parseSection(cleanText, 'Security');
-                    const performanceItems = parseSection(cleanText, 'Performance');
-                    const styleItems = parseSection(cleanText, 'Style');
+                    const securityItems = parseFindings(data.security_findings);
+                    const performanceItems = parseFindings(data.performance_findings);
+                    const styleItems = parseFindings(data.style_findings);
 
                     resultPanel.classList.remove('hidden');
                     overallScore.textContent = `${score}/10`;

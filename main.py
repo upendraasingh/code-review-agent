@@ -112,6 +112,7 @@ async def review_code(request: CodeReviewRequest):
             "security_findings": security_findings,
             "performance_findings": performance_findings,
             "style_findings": style_findings,
+            "summary": summary_comment,
             "summary_comment": summary_comment,
             "overall_score": overall_score,
         }
@@ -455,14 +456,15 @@ async def dashboard():
                 };
 
                 const showReviewResults = (data) => {
-                    const cleanText = data.summary_comment || '';
+                    const score = data.overall_score || data.score || 0;
+                    const cleanText = data.summary || data.summary_comment || '';
                     const securityItems = parseSection(cleanText, 'Security');
                     const performanceItems = parseSection(cleanText, 'Performance');
                     const styleItems = parseSection(cleanText, 'Style');
 
                     resultPanel.classList.remove('hidden');
-                    overallScore.textContent = `${data.overall_score}/10`;
-                    overallScore.className = getScoreClass(data.overall_score);
+                    overallScore.textContent = `${score}/10`;
+                    overallScore.className = getScoreClass(score);
                     reviewSummary.innerHTML = renderMarkdown(cleanText);
                     renderList(securityIssues, securityItems, '❌');
                     renderList(performanceIssues, performanceItems, '⚡');

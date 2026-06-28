@@ -3,13 +3,14 @@ load_dotenv(encoding='utf-8')
 
 import html
 import os
+import httpx
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import HTMLResponse, JSONResponse
 from app.db import create_review, get_all_reviews, update_review_results
 from app.models import CodeReviewRequest, GitHubPRURLRequest, GitHubWebhookPayload
 from app.services.github import fetch_github_pr_details, parse_github_pr_url
-from app.tasks import process_pull_request_review, run_code_review
+from app.tasks import run_code_review
 
 app = FastAPI(
     title="Code Review Agent",
@@ -40,16 +41,27 @@ async def review_pr(request: GitHubPRURLRequest):
         pr_url=request.pr_url,
     )
 
-    payload_data = {
+    security_findings, performance_findings, style_findings, summary_comment, overall_score = run_code_review(
+        pr_details["diff"], pr_details["title"], repo_name, pr_number
+    )
+    update_review_results(
+        review_id=review_id,
+        security_findings=security_findings,
+        performance_findings=performance_findings,
+        style_findings=style_findings,
+        summary_comment=summary_comment,
+        overall_score=overall_score,
+    )
+
+    return {
         "review_id": review_id,
-        "repo_name": repo_name,
-        "pull_request_number": pr_number,
-        "title": pr_details["title"],
-        "body": pr_details["body"],
-        "diff": pr_details["diff"],
+        "status": "complete",
+        "security_findings": security_findings,
+        "performance_findings": performance_findings,
+        "style_findings": style_findings,
+        "summary_comment": summary_comment,
+        "overall_score": overall_score,
     }
-    process_pull_request_review.delay(payload_data)
-    return {"review_id": review_id, "status": "queued"}
 
 
 @app.post("/review-code")
@@ -141,16 +153,27 @@ async def github_webhook(request: Request):
         pr_url=pr_url,
     )
 
-    payload_data = {
+    security_findings, performance_findings, style_findings, summary_comment, overall_score = run_code_review(
+        diff, pr.get("title", ""), repo_name, pr.get("number")
+    )
+    update_review_results(
+        review_id=review_id,
+        security_findings=security_findings,
+        performance_findings=performance_findings,
+        style_findings=style_findings,
+        summary_comment=summary_comment,
+        overall_score=overall_score,
+    )
+
+    return {
         "review_id": review_id,
-        "repo_name": repo_name,
-        "pull_request_number": pr.get("number"),
-        "title": pr.get("title", ""),
-        "body": pr.get("body", ""),
-        "diff": diff,
+        "status": "complete",
+        "security_findings": security_findings,
+        "performance_findings": performance_findings,
+        "style_findings": style_findings,
+        "summary_comment": summary_comment,
+        "overall_score": overall_score,
     }
-    process_pull_request_review.delay(payload_data)
-    return {"review_id": review_id, "status": "queued"}
 
 
 @app.get("/", response_class=HTMLResponse)
@@ -218,6 +241,14 @@ async def dashboard():
                 .button-primary:hover { transform: translateY(-1px); box-shadow: 0 18px 30px rgba(56, 139, 253, 0.30); }
                 .button-primary:disabled { opacity: 0.5; cursor: not-allowed; transform: none; box-shadow: none; }
                 .button-spinner { width: 18px; height: 18px; border: 3px solid rgba(255,255,255,0.35); border-top-color: #ffffff; border-radius: 50%; animation: spin 1s linear infinite; display: inline-block; }
+                .text-input { width: 100%; border-radius: 20px; border: 1px solid rgba(110, 118, 129, 0.24); background: #010409; color: #c9d1d9; padding: 16px 18px; font-size: 0.98rem; }
+                .text-input::placeholder { color: rgba(203, 213, 225, 0.5); }
+                .tabs { display: flex; gap: 12px; margin-bottom: 24px; flex-wrap: wrap; }
+                .tab-button { padding: 14px 22px; border-radius: 16px; border: 1px solid rgba(110, 118, 129, 0.25); background: rgba(15, 23, 42, 0.95); color: #c9d1d9; font-weight: 700; cursor: pointer; transition: background 0.2s ease, border-color 0.2s ease, transform 0.2s ease; }
+                .tab-button.active { background: linear-gradient(135deg, rgba(56, 139, 253, 0.16), rgba(56, 139, 253, 0.08)); border-color: rgba(88, 166, 255, 0.35); color: #ffffff; transform: translateY(-1px); }
+                .tab-button:hover { background: rgba(56, 139, 253, 0.12); }
+                .tab-panel { margin-top: 12px; }
+                .button-spinner { width: 18px; height: 18px; border: 3px solid rgba(255,255,255,0.35); border-top-color: #ffffff; border-radius: 50%; animation: spin 1s linear infinite; display: inline-block; }
                 .score-circle { display: inline-flex; align-items: center; justify-content: center; width: 120px; height: 120px; border-radius: 50%; font-size: 2rem; font-weight: 800; color: #ffffff; margin-bottom: 18px; }
                 .score-green { background: linear-gradient(180deg, #1f6feb 0%, #0c5dc0 100%); }
                 .score-yellow { background: linear-gradient(180deg, #f5b301 0%, #d28700 100%); }
@@ -266,22 +297,37 @@ async def dashboard():
                 </div>
                 <div class="layout-grid">
                     <section class="panel">
-                        <h2>Review your code</h2>
-                        <div class="label">Language</div>
-                        <div class="pill-row" id="languagePills">
-                            <button type="button" class="pill active" data-lang="python">Python</button>
-                            <button type="button" class="pill" data-lang="php">PHP</button>
-                            <button type="button" class="pill" data-lang="javascript">JavaScript</button>
-                            <button type="button" class="pill" data-lang="ruby">Ruby</button>
-                            <button type="button" class="pill" data-lang="sql">SQL</button>
+                        <div class="tabs" role="tablist">
+                            <button type="button" class="tab-button active" data-tab="code" id="tabCode">📝 Review Code</button>
+                            <button type="button" class="tab-button" data-tab="pr" id="tabPr">🔗 Review GitHub PR</button>
                         </div>
-                        <input type="hidden" id="languageInput" name="language" value="python" />
-                        <label class="label" for="codeInput">Paste your code</label>
-                        <textarea id="codeInput" class="code-input" placeholder="Paste code here..."></textarea>
-                        <label class="label" for="filenameInput">Filename (optional)</label>
-                        <input id="filenameInput" type="text" placeholder="example.py" />
-                        <div class="details-row">
-                            <button type="button" class="button-primary" id="reviewBtn">Review My Code</button>
+                        <div class="tab-panel" id="codeReviewTab">
+                            <h2>Review your code</h2>
+                            <div class="label">Language</div>
+                            <div class="pill-row" id="languagePills">
+                                <button type="button" class="pill active" data-lang="python">Python</button>
+                                <button type="button" class="pill" data-lang="php">PHP</button>
+                                <button type="button" class="pill" data-lang="javascript">JavaScript</button>
+                                <button type="button" class="pill" data-lang="ruby">Ruby</button>
+                                <button type="button" class="pill" data-lang="sql">SQL</button>
+                            </div>
+                            <input type="hidden" id="languageInput" name="language" value="python" />
+                            <label class="label" for="codeInput">Paste your code</label>
+                            <textarea id="codeInput" class="code-input" placeholder="Paste code here..."></textarea>
+                            <label class="label" for="filenameInput">Filename (optional)</label>
+                            <input id="filenameInput" type="text" class="text-input" placeholder="example.py" />
+                            <div class="details-row">
+                                <button type="button" class="button-primary" id="reviewBtn">Review My Code</button>
+                            </div>
+                        </div>
+                        <div class="tab-panel hidden" id="prReviewTab">
+                            <h2>Review a GitHub PR</h2>
+                            <div class="label">GitHub PR URL</div>
+                            <input id="prUrlInput" class="text-input" type="url" placeholder="https://github.com/username/repo/pull/1" />
+                            <p class="note">Paste any public GitHub PR URL to get an AI review.</p>
+                            <div class="details-row">
+                                <button type="button" class="button-primary" id="reviewPrBtn">Review PR</button>
+                            </div>
                         </div>
                     </section>
                     <section class="panel hidden" id="reviewResultPanel">
@@ -313,6 +359,7 @@ async def dashboard():
                 const languagePills = document.querySelectorAll('.pill');
                 const languageInput = document.getElementById('languageInput');
                 const reviewBtn = document.getElementById('reviewBtn');
+                const reviewPrBtn = document.getElementById('reviewPrBtn');
                 const resultPanel = document.getElementById('reviewResultPanel');
                 const overallScore = document.getElementById('overallScore');
                 const reviewSummary = document.getElementById('reviewSummary');
@@ -321,6 +368,10 @@ async def dashboard():
                 const styleIssues = document.getElementById('styleIssues');
                 const codeInput = document.getElementById('codeInput');
                 const filenameInput = document.getElementById('filenameInput');
+                const prUrlInput = document.getElementById('prUrlInput');
+                const tabButtons = document.querySelectorAll('.tab-button');
+                const codeReviewTab = document.getElementById('codeReviewTab');
+                const prReviewTab = document.getElementById('prReviewTab');
 
                 const getScoreClass = (score) => {
                     if (score >= 8) return 'score-circle score-green';
@@ -351,11 +402,6 @@ async def dashboard():
                     container.innerHTML = items.map(item => `\n                        <li class="result-item"><span>${icon}</span><p>${item}</p></li>\n                    `).join('');
                 };
 
-                const setLoading = (isLoading) => {
-                    reviewBtn.disabled = isLoading;
-                    reviewBtn.innerHTML = isLoading ? '<span class="button-spinner"></span> Reviewing...' : 'Review My Code';
-                };
-
                 const selectLanguage = (lang) => {
                     languagePills.forEach((pill) => {
                         pill.classList.toggle('active', pill.dataset.lang === lang);
@@ -367,6 +413,15 @@ async def dashboard():
                     pill.addEventListener('click', () => selectLanguage(pill.dataset.lang));
                 });
 
+                tabButtons.forEach((button) => {
+                    button.addEventListener('click', () => {
+                        tabButtons.forEach((btn) => btn.classList.toggle('active', btn === button));
+                        const activeTab = button.dataset.tab;
+                        codeReviewTab.classList.toggle('hidden', activeTab !== 'code');
+                        prReviewTab.classList.toggle('hidden', activeTab !== 'pr');
+                    });
+                });
+
                 const hydrateHistory = () => {
                     document.querySelectorAll('.history-markdown').forEach((container) => {
                         container.innerHTML = marked.parse(container.textContent || '');
@@ -374,6 +429,38 @@ async def dashboard():
                 };
 
                 document.addEventListener('DOMContentLoaded', hydrateHistory);
+
+                const setLoading = (isLoading, button) => {
+                    button.disabled = isLoading;
+                    button.innerHTML = isLoading ? '<span class="button-spinner"></span> Reviewing...' : button.dataset.defaultLabel;
+                };
+
+                reviewBtn.dataset.defaultLabel = 'Review My Code';
+                reviewPrBtn.dataset.defaultLabel = 'Review PR';
+
+                const handleReviewResponse = async (response) => {
+                    const data = await response.json();
+                    if (!response.ok) {
+                        throw new Error(data.detail || 'Unable to review request.');
+                    }
+                    return data;
+                };
+
+                const showReviewResults = (data) => {
+                    const cleanText = data.summary_comment || '';
+                    const securityItems = parseSection(cleanText, 'Security');
+                    const performanceItems = parseSection(cleanText, 'Performance');
+                    const styleItems = parseSection(cleanText, 'Style');
+
+                    resultPanel.classList.remove('hidden');
+                    overallScore.textContent = `${data.overall_score}/10`;
+                    overallScore.className = getScoreClass(data.overall_score);
+                    reviewSummary.innerHTML = renderMarkdown(cleanText);
+                    renderList(securityIssues, securityItems, '❌');
+                    renderList(performanceIssues, performanceItems, '⚡');
+                    renderList(styleIssues, styleItems, '💡');
+                    resultPanel.scrollIntoView({ behavior: 'smooth', block: 'start' });
+                };
 
                 reviewBtn.addEventListener('click', async () => {
                     const code = codeInput.value.trim();
@@ -383,35 +470,41 @@ async def dashboard():
                         codeInput.focus();
                         return;
                     }
-                    setLoading(true);
+                    setLoading(true, reviewBtn);
                     try {
                         const response = await fetch('/review-code', {
                             method: 'POST',
                             headers: { 'Content-Type': 'application/json' },
                             body: JSON.stringify({ code, language, filename }),
                         });
-                        const data = await response.json();
-                        if (!response.ok) {
-                            alert(data.detail || 'Unable to review code.');
-                            return;
-                        }
-                        const cleanText = data.summary_comment || '';
-                        const securityItems = parseSection(cleanText, 'Security');
-                        const performanceItems = parseSection(cleanText, 'Performance');
-                        const styleItems = parseSection(cleanText, 'Style');
-
-                        resultPanel.classList.remove('hidden');
-                        overallScore.textContent = `${data.overall_score}/10`;
-                        overallScore.className = getScoreClass(data.overall_score);
-                        reviewSummary.innerHTML = renderMarkdown(cleanText);
-                        renderList(securityIssues, securityItems, '❌');
-                        renderList(performanceIssues, performanceItems, '⚡');
-                        renderList(styleIssues, styleItems, '💡');
-                        resultPanel.scrollIntoView({ behavior: 'smooth', block: 'start' });
+                        const data = await handleReviewResponse(response);
+                        showReviewResults(data);
                     } catch (error) {
-                        alert('Unable to review code. Please try again.');
+                        alert(error.message || 'Unable to review code. Please try again.');
                     } finally {
-                        setLoading(false);
+                        setLoading(false, reviewBtn);
+                    }
+                });
+
+                reviewPrBtn.addEventListener('click', async () => {
+                    const prUrl = prUrlInput.value.trim();
+                    if (!prUrl) {
+                        prUrlInput.focus();
+                        return;
+                    }
+                    setLoading(true, reviewPrBtn);
+                    try {
+                        const response = await fetch('/review-pr', {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({ pr_url: prUrl }),
+                        });
+                        const data = await handleReviewResponse(response);
+                        showReviewResults(data);
+                    } catch (error) {
+                        alert(error.message || 'Unable to review PR. Please try again.');
+                    } finally {
+                        setLoading(false, reviewPrBtn);
                     }
                 });
             </script>

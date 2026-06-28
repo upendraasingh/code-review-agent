@@ -1,5 +1,6 @@
 import os
 import re
+from config import GROQ_API_KEY
 from typing import Any, List
 from langchain_groq import ChatGroq
 from langchain_core.prompts import (
@@ -63,7 +64,10 @@ def summarize_findings(
         HumanMessagePromptTemplate.from_template(human_prompt),
     ])
 
-    llm = ChatGroq(model="llama-3.1-8b-instant", api_key=os.environ.get("GROQ_API_KEY"))
+    llm = ChatGroq(
+        model="llama-3.1-8b-instant",
+        api_key=GROQ_API_KEY,
+    )
     chain = prompt | llm
 
     response = chain.invoke(

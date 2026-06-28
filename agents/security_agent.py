@@ -1,5 +1,6 @@
 import os
 from typing import List
+from config import GROQ_API_KEY
 from langchain_groq import ChatGroq
 from langchain_core.prompts import (
     ChatPromptTemplate,
@@ -20,7 +21,10 @@ def analyze_security(diff: str) -> List[str]:
         HumanMessagePromptTemplate.from_template(human_prompt),
     ])
 
-    llm = ChatGroq(model="llama-3.1-8b-instant", api_key=os.environ.get("GROQ_API_KEY"))
+    llm = ChatGroq(
+        model="llama-3.1-8b-instant",
+        api_key=GROQ_API_KEY,
+    )
     chain = prompt | llm
 
     response = chain.invoke({"diff": diff})

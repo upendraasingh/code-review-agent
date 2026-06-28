@@ -1,9 +1,13 @@
+import os
 from dotenv import load_dotenv
-load_dotenv(encoding='utf-8')
+load_dotenv()
+
+# Debug: print env vars
+print("=== ENV DEBUG ===")
+print("GROQ_API_KEY:", "SET" if os.environ.get("GROQ_API_KEY") else "NOT SET")
+print("=================")
 
 import html
-import os
-print("GROQ_API_KEY set:", bool(os.environ.get("GROQ_API_KEY")))
 import httpx
 
 from fastapi import FastAPI, HTTPException, Request
@@ -66,50 +70,58 @@ async def review_pr(request: GitHubPRURLRequest):
 
 
 @app.post("/review-code")
-def review_code(request: CodeReviewRequest):
-    if not request.code.strip():
-        raise HTTPException(status_code=400, detail="Code cannot be empty.")
+async def review_code(request: CodeReviewRequest):
+    try:
+        import os
+        groq_key = os.environ.get("GROQ_API_KEY")
+        if not groq_key:
+            return {"error": "GROQ_API_KEY not set", "status": 500}
 
-    title = request.filename or f"Code Review ({request.language})"
-    repo_name = "local-code"
-    pr_number = 0
-    diff_text = request.code
+        if not request.code.strip():
+            return {"error": "Code cannot be empty.", "status": 400}
 
-    review_id = create_review(
-        source="code",
-        repo_name=repo_name,
-        pr_number=pr_number,
-        title=title,
-        body=f"Language: {request.language}",
-        diff=diff_text,
-        pr_url="",
-        status="complete",
-        language=request.language,
-        filename=request.filename,
-        code_text=request.code,
-    )
+        title = request.filename or f"Code Review ({request.language})"
+        repo_name = "local-code"
+        pr_number = 0
+        diff_text = request.code
 
-    security_findings, performance_findings, style_findings, summary_comment, overall_score = run_code_review(
-        diff_text, title, repo_name, pr_number
-    )
-    update_review_results(
-        review_id=review_id,
-        security_findings=security_findings,
-        performance_findings=performance_findings,
-        style_findings=style_findings,
-        summary_comment=summary_comment,
-        overall_score=overall_score,
-    )
+        review_id = create_review(
+            source="code",
+            repo_name=repo_name,
+            pr_number=pr_number,
+            title=title,
+            body=f"Language: {request.language}",
+            diff=diff_text,
+            pr_url="",
+            status="complete",
+            language=request.language,
+            filename=request.filename,
+            code_text=request.code,
+        )
 
-    return {
-        "review_id": review_id,
-        "status": "complete",
-        "security_findings": security_findings,
-        "performance_findings": performance_findings,
-        "style_findings": style_findings,
-        "summary_comment": summary_comment,
-        "overall_score": overall_score,
-    }
+        security_findings, performance_findings, style_findings, summary_comment, overall_score = run_code_review(
+            diff_text, title, repo_name, pr_number
+        )
+        update_review_results(
+            review_id=review_id,
+            security_findings=security_findings,
+            performance_findings=performance_findings,
+            style_findings=style_findings,
+            summary_comment=summary_comment,
+            overall_score=overall_score,
+        )
+
+        return {
+            "review_id": review_id,
+            "status": "complete",
+            "security_findings": security_findings,
+            "performance_findings": performance_findings,
+            "style_findings": style_findings,
+            "summary_comment": summary_comment,
+            "overall_score": overall_score,
+        }
+    except Exception as e:
+        return {"error": str(e), "detail": type(e).__name__, "status": 500}
 
 
 @app.post("/webhook")

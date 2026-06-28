@@ -63,7 +63,7 @@ def summarize_findings(
         HumanMessagePromptTemplate.from_template(human_prompt),
     ])
 
-    llm = ChatGroq(model="llama-3.1-8b-instant", api_key=os.getenv("GROQ_API_KEY"))
+    llm = ChatGroq(model="llama-3.1-8b-instant", api_key=os.environ.get("GROQ_API_KEY"))
     chain = prompt | llm
 
     response = chain.invoke(

@@ -3,6 +3,7 @@ load_dotenv(encoding='utf-8')
 
 import html
 import os
+print("GROQ_API_KEY set:", bool(os.environ.get("GROQ_API_KEY")))
 import httpx
 
 from fastapi import FastAPI, HTTPException, Request

@@ -523,9 +523,9 @@ async def dashboard():
                     if (!findings) return [];
                     if (Array.isArray(findings)) return findings.filter(Boolean);
                     return findings
-                        .split(/\r?\n/)
+                        .split("\n")
                         .map((line) => line.trim())
-                        .filter(Boolean);
+                        .filter((line) => line.length > 0);
                 };
 
                 const showReviewResults = (data) => {

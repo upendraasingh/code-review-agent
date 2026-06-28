@@ -4,19 +4,76 @@ load_dotenv()
 
 import html
 import httpx
+import json
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import HTMLResponse, JSONResponse
+from pydantic import BaseModel
 from app.db import create_review, get_all_reviews, update_review_results
-from app.models import CodeReviewRequest, GitHubPRURLRequest, GitHubWebhookPayload
+from app.models import GitHubPRURLRequest, GitHubWebhookPayload
 from app.services.github import fetch_github_pr_details, parse_github_pr_url
-from app.tasks import run_code_review
+from langchain_groq import ChatGroq
+from langchain_core.prompts import ChatPromptTemplate
 
 app = FastAPI(
     title="Code Review Agent",
     description="AI-powered GitHub pull request review service built with FastAPI.",
     version="0.1.0",
 )
+
+
+class CodeRequest(BaseModel):
+    code: str
+    language: str = "python"
+    filename: str = ""
+
+
+def get_llm():
+    return ChatGroq(
+        model="llama-3.1-8b-instant",
+        api_key=os.environ.get("GROQ_API_KEY"),
+    )
+
+
+def review_code_with_ai(code: str, language: str):
+    llm = get_llm()
+    prompt = ChatPromptTemplate.from_messages([
+        ("system", """You are an expert code reviewer. Review the code and respond in exactly this JSON format:
+{
+    "score": <number 1-10>,
+    "security": ["issue1", "issue2"],
+    "performance": ["issue1", "issue2"],
+    "style": ["issue1", "issue2"],
+    "summary": "brief summary"
+}
+Return ONLY the JSON, no other text."""),
+        ("human", f"Review this {language} code:\n\n{code}")
+    ])
+    chain = prompt | llm
+    result = chain.invoke({})
+    return result.content
+
+
+def parse_ai_result(raw_result: str) -> dict:
+    result = raw_result.strip()
+    if result.startswith("```"):
+        parts = result.split("```")
+        if len(parts) >= 2:
+            result = parts[1]
+            if result.startswith("json"):
+                result = result[4:]
+    return json.loads(result)
+
+
+def run_code_review(code: str, title: str, repo_name: str, pr_number: int):
+    raw_result = review_code_with_ai(code, "diff")
+    data = parse_ai_result(raw_result)
+    security_findings = data.get("security", ["No issues found"])
+    performance_findings = data.get("performance", ["No issues found"])
+    style_findings = data.get("style", ["No issues found"])
+    summary_comment = data.get("summary", "Review complete")
+    overall_score = data.get("score", 5)
+    return security_findings, performance_findings, style_findings, summary_comment, overall_score
 
 
 @app.post("/review-pr")
@@ -65,15 +122,13 @@ async def review_pr(request: GitHubPRURLRequest):
 
 
 @app.post("/review-code")
-async def review_code(request: CodeReviewRequest):
+async def review_code(request: CodeRequest):
     try:
-        import os
-        groq_key = os.environ.get("GROQ_API_KEY")
-        if not groq_key:
-            return {"error": "GROQ_API_KEY not set", "status": 500}
+        if not os.environ.get("GROQ_API_KEY"):
+            return JSONResponse(status_code=500, content={"error": "GROQ_API_KEY not set"})
 
         if not request.code.strip():
-            return {"error": "Code cannot be empty.", "status": 400}
+            return JSONResponse(status_code=400, content={"error": "Code cannot be empty."})
 
         title = request.filename or f"Code Review ({request.language})"
         repo_name = "local-code"
@@ -88,41 +143,45 @@ async def review_code(request: CodeReviewRequest):
             body=f"Language: {request.language}",
             diff=diff_text,
             pr_url="",
-            status="complete",
+            status="pending",
             language=request.language,
             filename=request.filename,
             code_text=request.code,
         )
 
-        security_findings, performance_findings, style_findings, summary_comment, overall_score = run_code_review(
-            diff_text, title, repo_name, pr_number
-        )
+        result = review_code_with_ai(request.code, request.language)
+        result = result.strip()
+        if result.startswith("```"):
+            result = result.split("```")[1]
+            if result.startswith("json"):
+                result = result[4:]
+        data = json.loads(result)
+
+        security_findings = data.get("security", ["No issues found"])
+        performance_findings = data.get("performance", ["No issues found"])
+        style_findings = data.get("style", ["No issues found"])
+        summary_text = data.get("summary", "Review complete")
+        overall_score = data.get("score", 5)
+
         update_review_results(
             review_id=review_id,
             security_findings=security_findings,
             performance_findings=performance_findings,
             style_findings=style_findings,
-            summary_comment=summary_comment,
+            summary_comment=summary_text,
             overall_score=overall_score,
         )
 
-        def normalize_findings(findings):
-            if findings is None:
-                return ""
-            if isinstance(findings, (list, tuple)):
-                return "\n".join(str(item) for item in findings if item is not None)
-            return str(findings)
-
         return {
-            "overall_score": overall_score,
-            "summary": summary_comment or "Code review completed",
-            "security_findings": normalize_findings(security_findings),
-            "performance_findings": normalize_findings(performance_findings),
-            "style_findings": normalize_findings(style_findings),
             "status": "complete",
+            "overall_score": overall_score,
+            "summary": summary_text,
+            "security_findings": "\n".join(security_findings),
+            "performance_findings": "\n".join(performance_findings),
+            "style_findings": "\n".join(style_findings),
         }
     except Exception as e:
-        return {"error": str(e), "detail": type(e).__name__, "status": 500}
+        return JSONResponse(status_code=500, content={"error": str(e)})
 
 
 @app.post("/webhook")

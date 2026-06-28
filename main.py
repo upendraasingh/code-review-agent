@@ -2,11 +2,6 @@ import os
 from dotenv import load_dotenv
 load_dotenv()
 
-# Debug: print env vars
-print("=== ENV DEBUG ===")
-print("GROQ_API_KEY:", "SET" if os.environ.get("GROQ_API_KEY") else "NOT SET")
-print("=================")
-
 import html
 import httpx
 

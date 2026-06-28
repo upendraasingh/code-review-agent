@@ -9,6 +9,12 @@ class PullRequestReviewRequest(BaseModel):
     diff: str
 
 
+class CodeReviewRequest(BaseModel):
+    code: str
+    language: str
+    filename: str | None = None
+
+
 class GitHubPRURLRequest(BaseModel):
     pr_url: str
 

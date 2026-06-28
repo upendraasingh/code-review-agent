@@ -21,6 +21,35 @@ def security_review(diff: str) -> list[str]:
     return analyze_security(diff)
 
 
+def score_findings(
+    security_findings: list[str],
+    performance_findings: list[str],
+    style_findings: list[str],
+) -> int:
+    total_issues = (
+        len(security_findings)
+        + len(performance_findings)
+        + len(style_findings)
+    )
+    return max(0, min(10, 10 - total_issues))
+
+
+def run_code_review(code: str, title: str, repo_name: str, pr_number: int) -> tuple[list[str], list[str], list[str], str, int]:
+    security_findings = analyze_security(code)
+    performance_findings = analyze_performance(code)
+    style_findings = analyze_style(code)
+    summary_comment = summarize_findings(
+        security_findings=security_findings,
+        performance_findings=performance_findings,
+        style_findings=style_findings,
+        title=title,
+        repo_name=repo_name,
+        pr_number=pr_number,
+    )
+    overall_score = score_findings(security_findings, performance_findings, style_findings)
+    return security_findings, performance_findings, style_findings, summary_comment, overall_score
+
+
 @shared_task(name="app.tasks.performance_review")
 def performance_review(diff: str) -> list[str]:
     return analyze_performance(diff)
@@ -42,16 +71,19 @@ def summarize_and_update_review(results: list, review_id: int, title: str, repo_
         repo_name=repo_name,
         pr_number=pr_number,
     )
+    overall_score = score_findings(security_findings, performance_findings, style_findings)
     update_review_results(
         review_id=review_id,
         security_findings=security_findings,
         performance_findings=performance_findings,
         style_findings=style_findings,
         summary_comment=summary_comment,
+        overall_score=overall_score,
     )
     return {
         "review_id": review_id,
         "summary_comment": summary_comment,
+        "overall_score": overall_score,
     }
 
 

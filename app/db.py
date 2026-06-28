@@ -8,6 +8,13 @@ connection = sqlite3.connect(DB_PATH, check_same_thread=False)
 connection.row_factory = sqlite3.Row
 
 
+def _ensure_column(column_name: str, column_type: str) -> None:
+    existing_columns = [row[1] for row in connection.execute("PRAGMA table_info(reviews)")]
+    if column_name not in existing_columns:
+        connection.execute(f"ALTER TABLE reviews ADD COLUMN {column_name} {column_type}")
+        connection.commit()
+
+
 def _init_db() -> None:
     connection.execute(
         """
@@ -25,12 +32,20 @@ def _init_db() -> None:
             performance_findings TEXT,
             style_findings TEXT,
             summary_comment TEXT,
+            overall_score INTEGER NOT NULL DEFAULT 0,
+            language TEXT,
+            filename TEXT,
+            code_text TEXT,
             created_at TEXT NOT NULL,
             updated_at TEXT NOT NULL
         )
         """
     )
     connection.commit()
+    _ensure_column("overall_score", "INTEGER NOT NULL DEFAULT 0")
+    _ensure_column("language", "TEXT")
+    _ensure_column("filename", "TEXT")
+    _ensure_column("code_text", "TEXT")
 
 
 def _serialize_list(items: list[str]) -> str:
@@ -51,6 +66,15 @@ def create_review(
     body: str,
     diff: str,
     pr_url: str,
+    status: str = "pending",
+    security_findings: list[str] | None = None,
+    performance_findings: list[str] | None = None,
+    style_findings: list[str] | None = None,
+    summary_comment: str = "",
+    overall_score: int = 0,
+    language: str | None = None,
+    filename: str | None = None,
+    code_text: str | None = None,
 ) -> int:
     now = datetime.utcnow().isoformat()
     cursor = connection.execute(
@@ -58,8 +82,8 @@ def create_review(
         INSERT INTO reviews (
             source, repo_name, pr_number, pr_url, title, body, diff, status,
             security_findings, performance_findings, style_findings, summary_comment,
-            created_at, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            overall_score, language, filename, code_text, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             source,
@@ -69,11 +93,15 @@ def create_review(
             title,
             body,
             diff,
-            "pending",
-            _serialize_list([]),
-            _serialize_list([]),
-            _serialize_list([]),
-            "",
+            status,
+            _serialize_list(security_findings or []),
+            _serialize_list(performance_findings or []),
+            _serialize_list(style_findings or []),
+            summary_comment,
+            overall_score,
+            language,
+            filename,
+            code_text,
             now,
             now,
         ),
@@ -89,25 +117,29 @@ def update_review_results(
     style_findings: list[str],
     summary_comment: str,
     status: str = "complete",
+    overall_score: int | None = None,
 ) -> None:
     now = datetime.utcnow().isoformat()
-    connection.execute(
-        """
+    query = """
         UPDATE reviews
         SET security_findings = ?, performance_findings = ?, style_findings = ?,
             summary_comment = ?, status = ?, updated_at = ?
-        WHERE id = ?
-        """,
-        (
-            _serialize_list(security_findings),
-            _serialize_list(performance_findings),
-            _serialize_list(style_findings),
-            summary_comment,
-            status,
-            now,
-            review_id,
-        ),
-    )
+    """
+    params = [
+        _serialize_list(security_findings),
+        _serialize_list(performance_findings),
+        _serialize_list(style_findings),
+        summary_comment,
+        status,
+        now,
+    ]
+    if overall_score is not None:
+        query += ", overall_score = ?"
+        params.append(overall_score)
+    query += " WHERE id = ?"
+    params.append(review_id)
+
+    connection.execute(query, tuple(params))
     connection.commit()
 
 
@@ -133,6 +165,10 @@ def _row_to_dict(row: sqlite3.Row) -> dict:
         "performance_findings": _deserialize_list(row["performance_findings"]),
         "style_findings": _deserialize_list(row["style_findings"]),
         "summary_comment": row["summary_comment"],
+        "overall_score": row["overall_score"],
+        "language": row["language"],
+        "filename": row["filename"],
+        "code_text": row["code_text"],
         "created_at": row["created_at"],
         "updated_at": row["updated_at"],
     }

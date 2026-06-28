@@ -1,15 +1,41 @@
-from typing import List
-from langchain.chat_models import ChatOpenAI
-from langchain.prompts import ChatPromptTemplate, HumanMessagePromptTemplate, SystemMessagePromptTemplate
-from langchain.chains import LLMChain
+import os
+import re
+from typing import Any, List
+from langchain_groq import ChatGroq
+from langchain_core.prompts import (
+    ChatPromptTemplate,
+    HumanMessagePromptTemplate,
+    SystemMessagePromptTemplate,
+)
 
 
-def _build_llm_chain(system_prompt: str, human_prompt: str) -> LLMChain:
-    prompt = ChatPromptTemplate.from_messages([
-        SystemMessagePromptTemplate.from_template(system_prompt),
-        HumanMessagePromptTemplate.from_template(human_prompt),
-    ])
-    return LLMChain(llm=ChatOpenAI(temperature=0.2), prompt=prompt)
+def _normalize_response_text(response: Any) -> str:
+    if response is None:
+        return ""
+    if isinstance(response, dict):
+        if "content" in response:
+            response = response["content"]
+        elif "text" in response:
+            response = response["text"]
+    if hasattr(response, "content"):
+        response = response.content
+    if hasattr(response, "text"):
+        response = response.text
+
+    text = str(response).strip()
+
+    # Handle representations like content='...', metadata=... or raw escaped newlines
+    if text.startswith("content="):
+        quote = text[8]
+        if quote in "'\"":
+            end_index = text.rfind(quote)
+            if end_index > 8:
+                text = text[9:end_index]
+    text = re.sub(r"\\\\n", "\n", text)
+    text = re.sub(r"\\\\r\\\\n", "\n", text)
+    text = re.sub(r"\\\\t", "\t", text)
+    return text.strip()
+
 
 
 def summarize_findings(
@@ -20,25 +46,40 @@ def summarize_findings(
     repo_name: str,
     pr_number: int,
 ) -> str:
-    chain = _build_llm_chain(
-        system_prompt="You are a GitHub PR review summarizer. Create a structured markdown report.",
-        human_prompt=(
-            "Combine these findings into a markdown report with sections for security, performance, and style. "
-            "If no findings are present for a section, note that the code appears clean.\n\n"
-            "PR Title: {title}\n"
-            "Repository: {repo_name}\n"
-            "PR Number: {pr_number}\n\n"
-            "Security Findings:\n{security}\n\n"
-            "Performance Findings:\n{performance}\n\n"
-            "Style Findings:\n{style}\n"
-        ),
+    system_prompt = "You are a GitHub PR review summarizer. Create a structured markdown report."
+    human_prompt = (
+        "Combine these findings into a markdown report with sections for security, performance, and style. "
+        "If no findings are present for a section, note that the code appears clean.\n\n"
+        "PR Title: {title}\n"
+        "Repository: {repo_name}\n"
+        "PR Number: {pr_number}\n\n"
+        "Security Findings:\n{security}\n\n"
+        "Performance Findings:\n{performance}\n\n"
+        "Style Findings:\n{style}\n"
     )
-    response = chain.predict(
-        title=title,
-        repo_name=repo_name,
-        pr_number=str(pr_number),
-        security="\n".join(security_findings) if security_findings else "No security issues detected.",
-        performance="\n".join(performance_findings) if performance_findings else "No performance issues detected.",
-        style="\n".join(style_findings) if style_findings else "No style issues detected.",
+
+    prompt = ChatPromptTemplate.from_messages([
+        SystemMessagePromptTemplate.from_template(system_prompt),
+        HumanMessagePromptTemplate.from_template(human_prompt),
+    ])
+
+    llm = ChatGroq(model="llama-3.1-8b-instant", api_key=os.getenv("GROQ_API_KEY"))
+    chain = prompt | llm
+
+    response = chain.invoke(
+        {
+            "title": title,
+            "repo_name": repo_name,
+            "pr_number": str(pr_number),
+            "security": "\n".join(security_findings)
+            if security_findings
+            else "No security issues detected.",
+            "performance": "\n".join(performance_findings)
+            if performance_findings
+            else "No performance issues detected.",
+            "style": "\n".join(style_findings) if style_findings else "No style issues detected.",
+        }
     )
-    return response.strip()
+
+    response_text = _normalize_response_text(response)
+    return response_text
